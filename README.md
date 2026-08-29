@@ -1,55 +1,65 @@
 # Plano de Desenvolvimento: Achou! — Marketplace de E-commerce
 
-## arquitetura
+## Arquitetura
 
+```mermaid
 flowchart TB
-    U[Usuário]
+    U["Usuário<br/>(Comprador / Lojista)"]
 
-    CDN[CDN]
-    WAF[WAF / Load Balancer]
+    subgraph EDGE["Borda"]
+        CDN["CDN<br/>Assets estáticos"]
+        WAF["WAF + Load Balancer"]
+        GW["API Gateway<br/>JWT · Rate Limiting"]
+    end
 
-    FE[Frontend<br/>Marketplace]
-    SELLER[Frontend<br/>Painel do Vendedor]
+    subgraph APPS["Aplicações (Flutter)"]
+        FE["Marketplace<br/>Vitrine · Carrinho · Checkout"]
+        SELLER["Painel do Vendedor<br/>Cadastro · Pedidos"]
+    end
 
-    API1[Backend API<br/>Instância 1]
-    API2[Backend API<br/>Instância 2]
-    APIN[Backend API<br/>Instância N]
+    subgraph CLUSTER["Cluster Elixir/BEAM — auto-scaling em 70% CPU"]
+        API1["Backend API<br/>Instância 1"]
+        API2["Backend API<br/>Instância 2"]
+        APIN["Backend API<br/>Instância N"]
+    end
 
-    REDIS[(Redis<br/>Cache)]
-    SEARCH[(Search Engine<br/>OpenSearch)]
+    subgraph DATA["Camada de Dados"]
+        REDIS[("Redis<br/>Cache de catálogo")]
+        DB[("PostgreSQL<br/>Primary — escrita")]
+        REPLICA[("PostgreSQL<br/>Read Replica")]
+        OUTBOX[("Transactional<br/>Outbox")]
+    end
 
-    DB[(PostgreSQL<br/>Primary)]
-    REPLICA[(PostgreSQL<br/>Read Replica)]
+    subgraph ASYNC["Processamento Assíncrono"]
+        QUEUE["Message Queue"]
+        WNOTIF["Notification Worker"]
+        WANALYTICS["Analytics Worker"]
+    end
 
-    OUTBOX[(Transactional<br/>Outbox)]
+    subgraph EXT["Serviços Externos"]
+        PAYMENT["Gateway de Pagamento<br/>(mock no MVP)"]
+        EMAIL["Serviço de E-mail"]
+        ANALYTICS["Analytics"]
+    end
 
-    QUEUE[Message Queue]
+    OBS["Monitoramento e Logs<br/>Métricas · Alertas · Auto-scaling"]
 
-    WORKER1[Search Worker]
-    WORKER2[Notification Worker]
-    WORKER3[Analytics Worker]
-
-    PAYMENT[Gateway de Pagamento]
-
-    EMAIL[Serviço de E-mail]
-    ANALYTICS[Analytics]
-
-    U --> CDN
-    CDN --> WAF
-
+    U --> CDN --> WAF
     WAF --> FE
     WAF --> SELLER
 
-    FE --> WAF
-    SELLER --> WAF
+    FE --> GW
+    SELLER --> GW
 
-    WAF --> API1
-    WAF --> API2
-    WAF --> APIN
+    GW --> API1
+    GW --> API2
+    GW --> APIN
 
     API1 --> REDIS
     API2 --> REDIS
     APIN --> REDIS
+
+    REDIS -. "cache miss" .-> REPLICA
 
     API1 --> DB
     API2 --> DB
@@ -59,24 +69,28 @@ flowchart TB
     API2 --> REPLICA
     APIN --> REPLICA
 
-    API1 --> SEARCH
-    API2 --> SEARCH
-    APIN --> SEARCH
-
     API1 --> PAYMENT
     API2 --> PAYMENT
     APIN --> PAYMENT
 
+    DB -. "replicação" .-> REPLICA
     DB --> OUTBOX
     OUTBOX --> QUEUE
 
-    QUEUE --> WORKER1
-    QUEUE --> WORKER2
-    QUEUE --> WORKER3
+    QUEUE --> WNOTIF --> EMAIL
+    QUEUE --> WANALYTICS --> ANALYTICS
 
-    WORKER1 --> SEARCH
-    WORKER2 --> EMAIL
-    WORKER3 --> ANALYTICS
+    CLUSTER -. "métricas" .-> OBS
+    ASYNC -. "métricas" .-> OBS
+    OBS -. "escala" .-> CLUSTER
+```
+
+**Decisões-chave do desenho**
+
+* **Cache primeiro:** leituras de catálogo são atendidas pelo Redis; apenas o *cache miss* alcança a réplica de leitura, isolando o banco durante picos de 20x.
+* **Separação leitura/escrita:** escritas (pedido, estoque, cadastro) vão para o *primary*; consultas vão para a *read replica*.
+* **Outbox transacional:** eventos são gravados na mesma transação do pedido e só então publicados na fila, evitando perda de notificação em caso de falha.
+* **Escala horizontal no BEAM:** o cluster Elixir cresce por instância, guiado pelas métricas de observabilidade (gatilho em 70% de CPU).
 
 ## 1. Disciplinas Aplicadas (Ordenadas por Nível de Importância)
 
