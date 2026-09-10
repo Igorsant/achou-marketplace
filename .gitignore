@@ -1,0 +1,16 @@
+# dependencias e build (qualquer nivel do monorepo)
+node_modules/
+dist/
+build/
+
+# ambiente
+.env
+.env.local
+
+# logs e temporarios
+*.log
+.DS_Store
+
+# Flutter (quando o app entrar)
+.dart_tool/
+.packages

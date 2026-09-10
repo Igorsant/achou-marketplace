@@ -4,85 +4,98 @@
 
 ```mermaid
 flowchart TB
-    U["Usuário<br/>(Comprador / Lojista)"]
-
-    subgraph EDGE["Borda"]
-        CDN["CDN<br/>Assets estáticos"]
-        WAF["WAF + Load Balancer"]
-        GW["API Gateway<br/>JWT · Rate Limiting"]
+    subgraph CLIENTE["① CLIENTE — app Flutter único, origem de toda requisição"]
+        direction TB
+        COMPRADOR(["Comprador<br/>vitrine · carrinho · checkout"])
+        LOJISTA(["Lojista<br/>cadastro de produtos · pedidos recebidos"])
+        FLUTTER["App Flutter — binário único<br/>navegação alterna por perfil<br/>role embutida no JWT"]
     end
 
-    subgraph APPS["Aplicações (Flutter)"]
-        FE["Marketplace<br/>Vitrine · Carrinho · Checkout"]
-        SELLER["Painel do Vendedor<br/>Cadastro · Pedidos"]
+    subgraph BORDA["② BORDA — filtra antes de chegar na aplicação"]
+        direction LR
+        CDN["CDN<br/>imagens e assets estáticos"]
+        WAF["WAF + Load Balancer<br/>bloqueia tráfego malicioso"]
+        GW["API Gateway<br/>valida JWT · Rate Limiting"]
     end
 
-    subgraph CLUSTER["Cluster Elixir/BEAM — auto-scaling em 70% CPU"]
-        API1["Backend API<br/>Instância 1"]
-        API2["Backend API<br/>Instância 2"]
-        APIN["Backend API<br/>Instância N"]
+    subgraph APP["③ APLICAÇÃO — Node.js/NestJS"]
+        API["Backend API<br/>instâncias 1..N<br/>auto-scaling em 70% CPU"]
     end
 
-    subgraph DATA["Camada de Dados"]
-        REDIS[("Redis<br/>Cache de catálogo")]
-        DB[("PostgreSQL<br/>Primary — escrita")]
+    subgraph LEITURA["④a LEITURA — catálogo e busca (~95% do tráfego)"]
+        direction LR
+        REDIS[("Redis<br/>cache de catálogo<br/>TTL de minutos")]
         REPLICA[("PostgreSQL<br/>Read Replica")]
-        OUTBOX[("Transactional<br/>Outbox")]
     end
 
-    subgraph ASYNC["Processamento Assíncrono"]
+    subgraph ESCRITA["④b ESCRITA — pedido, estoque, cadastro"]
+        direction LR
+        DB[("PostgreSQL Primary<br/>lock otimista no estoque")]
+        OUTBOX[("Transactional Outbox<br/>mesma transação do pedido")]
+        PAYMENT["Gateway de Pagamento<br/>mock no MVP"]
+    end
+
+    subgraph ASYNC["⑤ ASSÍNCRONO — fora do caminho da resposta"]
+        direction LR
         QUEUE["Message Queue"]
         WNOTIF["Notification Worker"]
         WANALYTICS["Analytics Worker"]
     end
 
-    subgraph EXT["Serviços Externos"]
-        PAYMENT["Gateway de Pagamento<br/>(mock no MVP)"]
+    subgraph EXT["⑥ SERVIÇOS EXTERNOS"]
+        direction LR
         EMAIL["Serviço de E-mail"]
         ANALYTICS["Analytics"]
     end
 
-    OBS["Monitoramento e Logs<br/>Métricas · Alertas · Auto-scaling"]
+    OBS["OBSERVABILIDADE<br/>métricas · logs · alertas"]
 
-    U --> CDN --> WAF
-    WAF --> FE
-    WAF --> SELLER
+    %% ---------- caminho da requisição ----------
+    COMPRADOR -->|"login como comprador"| FLUTTER
+    LOJISTA -->|"login como lojista"| FLUTTER
 
-    FE --> GW
-    SELLER --> GW
+    FLUTTER -->|"assets"| CDN
+    FLUTTER -->|"chamadas de API"| WAF
 
-    GW --> API1
-    GW --> API2
-    GW --> APIN
+    WAF --> GW
+    GW --> API
 
-    API1 --> REDIS
-    API2 --> REDIS
-    APIN --> REDIS
-
+    %% ---------- leitura ----------
+    API ==>|"GET catálogo"| REDIS
     REDIS -. "cache miss" .-> REPLICA
+    REPLICA -. "popula cache" .-> REDIS
 
-    API1 --> DB
-    API2 --> DB
-    APIN --> DB
-
-    API1 --> REPLICA
-    API2 --> REPLICA
-    APIN --> REPLICA
-
-    API1 --> PAYMENT
-    API2 --> PAYMENT
-    APIN --> PAYMENT
-
-    DB -. "replicação" .-> REPLICA
+    %% ---------- escrita ----------
+    API -->|"POST pedido"| DB
+    API -->|"autoriza"| PAYMENT
     DB --> OUTBOX
-    OUTBOX --> QUEUE
+    DB -. "replicação" .-> REPLICA
 
+    %% ---------- eventos ----------
+    OUTBOX -->|"publica evento"| QUEUE
     QUEUE --> WNOTIF --> EMAIL
     QUEUE --> WANALYTICS --> ANALYTICS
 
-    CLUSTER -. "métricas" .-> OBS
+    %% ---------- observabilidade ----------
+    API -. "métricas" .-> OBS
     ASYNC -. "métricas" .-> OBS
-    OBS -. "escala" .-> CLUSTER
+    OBS -. "dispara escala" .-> APP
+
+    classDef cliente fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#1e3a5f
+    classDef borda fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#78350f
+    classDef app fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#14532d
+    classDef dados fill:#f3e8ff,stroke:#9333ea,stroke-width:2px,color:#4c1d95
+    classDef assinc fill:#ffe4e6,stroke:#e11d48,stroke-width:2px,color:#881337
+    classDef obsv fill:#e2e8f0,stroke:#475569,stroke-width:2px,color:#0f172a
+
+    classDef perfil fill:#eff6ff,stroke:#60a5fa,stroke-width:1px,color:#1e3a5f
+    class COMPRADOR,LOJISTA perfil
+    class FLUTTER cliente
+    class CDN,WAF,GW borda
+    class API app
+    class REDIS,REPLICA,DB,OUTBOX,PAYMENT dados
+    class QUEUE,WNOTIF,WANALYTICS,EMAIL,ANALYTICS assinc
+    class OBS obsv
 ```
 
 **Decisões-chave do desenho**
@@ -90,7 +103,16 @@ flowchart TB
 * **Cache primeiro:** leituras de catálogo são atendidas pelo Redis; apenas o *cache miss* alcança a réplica de leitura, isolando o banco durante picos de 20x.
 * **Separação leitura/escrita:** escritas (pedido, estoque, cadastro) vão para o *primary*; consultas vão para a *read replica*.
 * **Outbox transacional:** eventos são gravados na mesma transação do pedido e só então publicados na fila, evitando perda de notificação em caso de falha.
-* **Escala horizontal no BEAM:** o cluster Elixir cresce por instância, guiado pelas métricas de observabilidade (gatilho em 70% de CPU).
+* **Escala horizontal por instância:** como o Node.js é single-thread por processo, a capacidade cresce adicionando réplicas do contêiner, guiadas pelas métricas de observabilidade (gatilho em 70% de CPU).
+
+## Documentação
+
+| Documento | Conteúdo |
+|---|---|
+| [docs/data-model.md](docs/data-model.md) | Modelagem do banco: diagrama ER, tabelas, índices e decisões |
+| [docs/api-design.md](docs/api-design.md) | Contrato da API: rotas, erros, cache e busca |
+| [docs/setup.md](docs/setup.md) | Subir o ambiente local e rodar migrations |
+| [docs/achou-marketplace.postman_collection.json](docs/achou-marketplace.postman_collection.json) | Collection do Postman com as rotas e testes |
 
 ## 1. Disciplinas Aplicadas (Ordenadas por Nível de Importância)
 
@@ -99,10 +121,10 @@ Abaixo estão as disciplinas do curso mapeadas para a execução deste projeto. 
 **Alta Criticidade (Core do Desafio DevOps e Escalabilidade)**
 
 * [x] **Arquitetura de Microsserviços e Escalabilidade:** Desenho estrutural para absorver picos de 20x no tráfego isolando o catálogo.
-* [x] **Desenvolvimento de Software Integrado – DevOps:** Cultura e ferramentas para unir a codificação em Elixir/Flutter com a operação de infraestrutura.
+* [x] **Desenvolvimento de Software Integrado – DevOps:** Cultura e ferramentas para unir a codificação em Node.js/Flutter com a operação de infraestrutura.
 * [x] **Computação em Nuvem:** Base para o provisionamento de recursos elásticos.
 * [x] **Monitoramento e Análise de Logs:** Observabilidade vital para acionar o auto-scaling dinamicamente quando a CPU atingir 70%.
-* [x] **Orquestração de Contêineres e Gerenciamento de Cluster:** Gestão dos nós do Elixir (BEAM) para concorrência massiva.
+* [x] **Orquestração de Contêineres e Gerenciamento de Cluster:** Gestão das réplicas da API Node.js, escalando horizontalmente para absorver a concorrência dos picos.
 * [x] **Integração e Entrega Contínua (CI/CD):** Automação de builds e testes para viabilizar entregas seguras no curtíssimo prazo de 4 aulas.
 * [x] **Testes Automatizados e Contínuos:** Foco primário em testes de carga/estresse para validar o hit rate do cache no Redis.
 
@@ -128,7 +150,7 @@ Abaixo estão as disciplinas do curso mapeadas para a execução deste projeto. 
 
 ## 2. Visão Geral
 
-Construção de um MVP para um marketplace de nicho focado em conectar lojistas e compradores. A arquitetura foi desenhada com tolerância zero a falhas durante campanhas promocionais, utilizando Elixir no backend para gerenciar altíssima concorrência, Flutter no frontend para cobrir múltiplas plataformas com código único, e Redis como camada de proteção principal para o banco de dados.
+Construção de um MVP para um marketplace de nicho focado em conectar lojistas e compradores. A arquitetura foi desenhada com tolerância zero a falhas durante campanhas promocionais, utilizando Node.js com NestJS no backend, Flutter no frontend para cobrir múltiplas plataformas com código único, e Redis como camada de proteção principal para o banco de dados.
 
 ## 3. Escopo (Principais Funcionalidades)
 
@@ -140,20 +162,20 @@ Construção de um MVP para um marketplace de nicho focado em conectar lojistas 
 ## 4. Cronograma (Mapeamento das Aulas)
 
 * **Aula 1 (Hoje):** Definição da arquitetura, criação do repositório base, mapeamento de disciplinas e setup inicial das esteiras de CI.
-* **Aula 2 (Backend & Dados):** Modelagem do PostgreSQL, criação das rotas REST em Elixir e implementação da camada de cache no Redis.
+* **Aula 2 (Backend & Dados):** Modelagem do PostgreSQL, criação das rotas REST em NestJS e implementação da camada de cache no Redis.
 * **Aula 3 (Frontend UX/UI):** Construção das interfaces em Flutter (vitrine, carrinho e painel do vendedor) e integração com as APIs desenvolvidas.
 * **Aula 4 (Checkout & Carga):** Fechamento do fluxo de transação, simulação de testes de carga na rota de catálogo e validação do comportamento do cluster.
 
 ## 5. Estratégia de Testes
 
-* **Testes de Integração:** Validação da consistência de dados entre o Elixir e o PostgreSQL (ex: não permitir saldo negativo de estoque).
-* **Testes de Carga/Estresse:** Simulação de um evento promocional disparando milhares de requisições de leitura simultâneas contra a API para comprovar a eficiência da configuração do Redis e a resiliência da Erlang VM.
+* **Testes de Integração:** Validação da consistência de dados entre a API Node.js e o PostgreSQL (ex: não permitir saldo negativo de estoque).
+* **Testes de Carga/Estresse:** Simulação de um evento promocional disparando milhares de requisições de leitura simultâneas contra a API para comprovar a eficiência da configuração do Redis e o comportamento do auto-scaling do cluster.
 
 ## 6. Estratégia de Segurança (DevSecOps)
 
 * **Proteção de Borda:** Rate Limiting configurado no API Gateway para barrar abusos volumétricos nas rotas não-cacheadas (ex: fechamento de pedido).
 * **Autenticação:** Uso de tokens JWT para blindar as rotas do painel do vendedor.
-* **Prevenção de Injeção:** Consultas parametrizadas por padrão utilizando o ORM nativo.
+* **Prevenção de Injeção:** Consultas parametrizadas por padrão através do ORM, eliminando concatenação de SQL.
 
 ## 7. Plano de Operação
 
