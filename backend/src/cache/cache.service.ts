@@ -18,8 +18,17 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
       // Sem retry infinito: se o Redis nao volta, a API segue no Postgres.
       maxRetriesPerRequest: 2,
       lazyConnect: false,
+<<<<<<< Updated upstream
       retryStrategy: (tentativas) => Math.min(tentativas * 200, 3000),
     });
+=======
+      retryStrategy: (tentativas: number) => Math.min(tentativas * 200, 3000),
+    };
+    const conexao = conexaoRedis(this.config);
+    this.client = 'url' in conexao
+      ? new Redis(conexao.url, opcoes)
+      : new Redis({ ...conexao, ...opcoes });
+>>>>>>> Stashed changes
 
     this.client.on('ready', () => {
       this.disponivel = true;

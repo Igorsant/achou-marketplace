@@ -11,6 +11,15 @@ build/
 *.log
 .DS_Store
 
+# Terraform: o state guarda senhas e o token do registro em texto puro.
+# O .terraform.lock.hcl VAI para o git (fixa as versoes dos providers).
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+infra/oci/kubeconfig
+
 # Flutter (quando o app entrar)
 .dart_tool/
 .packages

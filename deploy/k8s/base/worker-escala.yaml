@@ -1,0 +1,32 @@
+# O worker escala pela fila, nao por CPU: ele passa a maior parte do tempo
+# esperando o provedor de e-mail, entao a CPU fica baixa mesmo com a fila
+# acumulando.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker
+spec:
+  scaleTargetRef:
+    name: worker
+  minReplicaCount: 1
+  maxReplicaCount: 5
+  # Se o Prometheus cair, a escala por fila congela no numero atual de pods.
+  # Apos 3 leituras falhas seguidas, o KEDA fixa este valor ate a metrica
+  # voltar. Visto no teste: o Prometheus do cluster local foi OOMKilled e o
+  # ScaledObject ficou sem conseguir calcular replicas.
+  fallback:
+    failureThreshold: 3
+    replicas: 2
+  triggers:
+    # Cada replica processa ~12 e-mails/s (concorrencia 5, ~400ms por envio).
+    # 100 jobs esperando por replica = uns 8s de atraso: acima disso, sobe outra.
+    - type: prometheus
+      metadata:
+        # Endereco do kube-prometheus-stack instalado pelo Terraform
+        # (release "kube-prometheus-stack" no namespace "monitoring").
+        serverAddress: http://kube-prometheus-stack-prometheus.monitoring.svc:9090
+        query: sum(achou_fila_jobs{estado="aguardando"})
+        threshold: "100"
+        # Com a fila inalcancavel a serie some (ver worker-metrics.service.ts):
+        # trata como 0 e mantem as replicas atuais em vez de dar erro.
+        ignoreNullValues: "true"

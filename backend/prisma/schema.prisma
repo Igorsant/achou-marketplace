@@ -213,3 +213,19 @@ model ProcessedEvent {
   @@id([eventId, handler])
   @@map("processed_events")
 }
+
+// Fila do ambiente local (FILA_DRIVER=postgres); em producao, OCI Queue.
+// O indice parcial idx_fila_visiveis esta so na migration: o Prisma nao
+// introspecta indice parcial.
+model FilaMensagem {
+  id         String   @id @db.Uuid
+  tipo       String
+  conteudo   Json
+  tentativas Int      @default(0)
+  visivelEm  DateTime @default(now()) @map("visivel_em") @db.Timestamptz(6)
+  morta      Boolean  @default(false)
+  ultimoErro String?  @map("ultimo_erro")
+  criadaEm   DateTime @default(now()) @map("criada_em") @db.Timestamptz(6)
+
+  @@map("fila_mensagens")
+}

@@ -1,0 +1,24 @@
+# Copie para terraform.tfvars (ignorado pelo git) e preencha.
+# Os OCIDs estao no ~/.oci/config gerado ao criar a chave de API.
+
+tenancy_ocid = "ocid1.tenancy.oc1..aaaa..."
+usuario_ocid = "ocid1.user.oc1..aaaa..."
+regiao       = "sa-saopaulo-1" # a SUA home region
+
+# Recomendado: so o seu IP acessa a API do Kubernetes (curl ifconfig.me).
+# ips_admin = ["203.0.113.10/32"]
+
+# Recomendado: e-mail em 50% e 100% do orcamento mensal.
+# email_alerta_custo   = "voce@exemplo.com"
+# orcamento_mensal_usd = 50
+
+# Se o apply falhar com "Out of host capacity" (falta de A1 na regiao):
+# indice_ad = 1
+
+# Se pods ficarem Pending por falta de CPU, um node so, com tudo:
+# nodes               = 1
+# ocpus_por_node      = 2
+# memoria_por_node_gb = 12
+
+# Postgres gerenciado: os padroes ja sao o menor (e mais barato) tamanho.
+# postgres_versao = "17"

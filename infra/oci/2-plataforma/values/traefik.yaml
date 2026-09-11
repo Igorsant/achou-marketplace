@@ -1,0 +1,66 @@
+# Traefik como implementacao do Gateway API: e o unico Service
+# LoadBalancer do cluster, porque o Always Free da UM Network Load Balancer.
+deployment:
+  replicas: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    memory: 192Mi
+
+providers:
+  kubernetesGateway:
+    enabled: true
+  # So o Gateway API: menos permissoes e menos objetos observados.
+  kubernetesCRD:
+    enabled: false
+  kubernetesIngress:
+    enabled: false
+
+ingressRoute:
+  dashboard:
+    enabled: false
+
+gatewayClass:
+  name: traefik
+
+# O Gateway do contrato com os manifests: "publico" no namespace "gateway"
+# (deploy/k8s/base/rota.yaml), aceitando rotas so do namespace da aplicacao.
+gateway:
+  name: publico
+  listeners:
+    web:
+      port: 8000
+      protocol: HTTP
+      namespacePolicy:
+        from: Selector
+        selector:
+          matchLabels:
+            kubernetes.io/metadata.name: achou
+
+ports:
+  web:
+    # Fixa para a security list dos workers liberar so esta porta
+    # (infra/oci/1-cluster/rede.tf).
+    nodePort: 30080
+  # Sem HTTPS na apresentacao: exigiria dominio e certificado.
+  websecure:
+    expose:
+      default: false
+
+service:
+  annotations:
+    # NLB, o load balancer do Always Free sem limite de banda (o "flexible"
+    # gratuito fica travado em 10 Mbps).
+    oci.oraclecloud.com/load-balancer-type: nlb
+    # Preserva o IP do cliente: o Traefik repassa no X-Forwarded-For e o rate
+    # limit da API vale por usuario, nao para todos somados.
+    oci-network-load-balancer.oraclecloud.com/is-preserve-source: "true"
+    # Security lists sao do Terraform; o cloud controller nao mexe nelas.
+    oci-network-load-balancer.oraclecloud.com/security-list-management-mode: None
+  spec:
+    type: LoadBalancer
+    # Exigido para preservar o IP de origem.
+    externalTrafficPolicy: Local

@@ -1,0 +1,51 @@
+# Base comum a todos os ambientes. Os overlays trocam imagem, escala e rota.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: achou
+
+labels:
+  - pairs:
+      app.kubernetes.io/part-of: achou
+    includeSelectors: false
+
+resources:
+  - namespace.yaml
+  - api.yaml
+  - api-escala.yaml
+  - worker.yaml
+  - worker-escala.yaml
+  - migracao.yaml
+  - rota.yaml
+  - monitoramento.yaml
+
+# Configuracao nao secreta. Gerada com sufixo de hash no nome: mudar um valor
+# muda o nome, e isso dispara o rolling update dos pods sozinho.
+configMapGenerator:
+  - name: achou-config
+    options:
+      labels:
+        deploy.achou/etapa: pre-requisito
+    literals:
+      - NODE_ENV=production
+      - PORT=3000
+      - METRICS_PORT=9464
+      - WORKER_METRICS_PORT=9465
+      - JWT_ACCESS_EXPIRES=15m
+      - JWT_REFRESH_EXPIRES=7d
+      - CACHE_TTL_PRODUCT=300
+      - CACHE_TTL_LIST=120
+      - OUTBOX_POLL_INTERVAL_MS=5000
+      - OUTBOX_BATCH_SIZE=100
+      - NOTIFICATION_MOCK_FAILURE_RATE=0
+      # Fila na tabela do Postgres: funciona em qualquer cluster. O overlay
+      # oci troca para a OCI Queue.
+      - FILA_DRIVER=postgres
+      # Redes privadas: o gateway e o load balancer da nuvem ficam nelas.
+      # Com o CIDR da VPC em maos (Terraform), prefira ele -- e mais estrito.
+      - TRUST_PROXY=uniquelocal
+
+# O Secret "achou-secrets" NAO esta aqui: em producao quem cria e o Terraform
+# (DATABASE_URL, REDIS_CACHE_URL, JWT_SECRET e, com FILA_DRIVER=oci,
+# FILA_OCI_ID e FILA_OCI_ENDPOINT). O overlay local gera o seu com valores de
+# desenvolvimento.

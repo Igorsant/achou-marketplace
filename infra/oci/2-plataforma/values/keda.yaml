@@ -1,0 +1,21 @@
+# O padrao do chart pede 100m de CPU por pod (300m no total): um sexto do
+# cluster Always Free inteiro so para o autoscaler. Uso real e bem menor.
+resources:
+  operator:
+    requests:
+      cpu: 30m
+      memory: 96Mi
+    limits:
+      memory: 256Mi
+  metricServer:
+    requests:
+      cpu: 30m
+      memory: 96Mi
+    limits:
+      memory: 256Mi
+  webhooks:
+    requests:
+      cpu: 10m
+      memory: 48Mi
+    limits:
+      memory: 128Mi

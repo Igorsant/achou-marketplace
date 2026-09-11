@@ -1,0 +1,82 @@
+# kube-prometheus-stack enxuto: so Prometheus, Grafana e o operator.
+# O que fica e exatamente o que o dashboard e os alertas de observability/
+# usam; o resto disputaria os 12 GB e 2 OCPUs do Always Free.
+#
+# No cluster local (kind) o Prometheus completo foi OOMKilled repetidas vezes:
+# a stack padrao nao cabe junto da aplicacao numa maquina pequena.
+
+# Regras e dashboards padrao do chart dependem de kube-state-metrics e
+# node-exporter, e varias disparariam num cluster deste tamanho
+# (KubeCPUOvercommit, por exemplo) -- ruido no meio da apresentacao.
+defaultRules:
+  create: false
+
+alertmanager:
+  enabled: false
+
+# Control plane do OKE e gerenciado pela Oracle: nao da para raspar. Deixar
+# ligado so gera alvos "down".
+kubeApiServer:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
+coreDns:
+  enabled: false
+kubelet:
+  enabled: false
+kubeStateMetrics:
+  enabled: false
+nodeExporter:
+  enabled: false
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 192Mi
+
+prometheus:
+  prometheusSpec:
+    # Descobre ServiceMonitor e PrometheusRule de qualquer namespace, nao so
+    # os criados por este release (deploy/k8s/base/monitoramento.yaml e
+    # scripts/deploy.sh dependem disso).
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    scrapeInterval: 15s
+    evaluationInterval: 15s
+    retention: 2d
+    resources:
+      requests:
+        cpu: 50m
+        memory: 256Mi
+      limits:
+        memory: 768Mi
+
+grafana:
+  # O dashboard do projeto chega pelo sidecar (ConfigMap com o rotulo
+  # grafana_dashboard=1, criado por scripts/deploy.sh).
+  defaultDashboardsEnabled: false
+  sidecar:
+    dashboards:
+      searchNamespace: ALL
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+  resources:
+    requests:
+      cpu: 30m
+      memory: 128Mi
+    limits:
+      memory: 256Mi

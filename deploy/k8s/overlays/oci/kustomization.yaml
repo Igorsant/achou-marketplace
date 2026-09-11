@@ -1,0 +1,112 @@
+# Oracle Cloud (OKE). Os nodes ficam no Always Free (2 OCPUs e 12 GB para
+# sistema, plataforma e aplicacao); os requests abaixo sao o que faz caber.
+# Os pods continuam podendo usar CPU ociosa acima deles (nao ha limite).
+#
+# Postgres gerenciado e OCI Queue ficam fora do cluster. Namespaces, segredos,
+# certificado do banco e acesso ao registro vem do Terraform
+# (infra/oci/2-plataforma). Publicar: scripts/oci.sh publicar <tag>.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - dependencias.yaml
+
+configMapGenerator:
+  - name: achou-config
+    namespace: achou
+    behavior: merge
+    literals:
+      # OCI Queue, autenticada pela identidade do node (instance principal).
+      # FILA_OCI_ID e FILA_OCI_ENDPOINT chegam pelo Secret achou-secrets.
+      - FILA_DRIVER=oci
+
+patches:
+  # Sem dominio: a API responde no IP do Network Load Balancer.
+  - target:
+      kind: HTTPRoute
+      name: api
+    patch: |-
+      - op: remove
+        path: /spec/hostnames
+
+  # Certificado da CA do Postgres gerenciado, que so aceita TLS. O caminho e
+  # o que o DATABASE_URL referencia (infra/oci/2-plataforma/aplicacao.tf).
+  - target:
+      kind: Deployment
+      labelSelector: app.kubernetes.io/part-of=achou
+    patch: |-
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: postgres-ca
+          secret:
+            secretName: postgres-ca
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: postgres-ca
+          mountPath: /etc/achou/postgres
+          readOnly: true
+  - target:
+      kind: Job
+      name: migracao
+    patch: |-
+      - op: add
+        path: /spec/template/spec/volumes/-
+        value:
+          name: postgres-ca
+          secret:
+            secretName: postgres-ca
+      - op: add
+        path: /spec/template/spec/containers/0/volumeMounts/-
+        value:
+          name: postgres-ca
+          mountPath: /etc/achou/postgres
+          readOnly: true
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests
+        value:
+          cpu: 50m
+          memory: 128Mi
+
+  - target:
+      kind: Deployment
+      name: api
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests
+        value:
+          cpu: 150m
+          memory: 192Mi
+
+  - target:
+      kind: Deployment
+      name: worker
+    patch: |-
+      - op: replace
+        path: /spec/template/spec/containers/0/resources/requests
+        value:
+          cpu: 30m
+          memory: 128Mi
+
+  # O gatilho continua em 700m absolutos (base/api-escala.yaml); o teto e
+  # o que cabe em 2 OCPUs.
+  - target:
+      kind: ScaledObject
+      name: api
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicaCount
+        value: 3
+
+  - target:
+      kind: ScaledObject
+      name: worker
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicaCount
+        value: 2
+      - op: replace
+        path: /spec/fallback/replicas
+        value: 1

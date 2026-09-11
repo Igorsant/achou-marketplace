@@ -1,3 +1,31 @@
+<<<<<<< Updated upstream
+=======
+# Configuracao comum a API e ao worker: mesma imagem, mesmo .env, mesmas dependencias.
+x-backend: &backend
+  build:
+    context: ./backend
+    dockerfile: Dockerfile
+    target: development
+  env_file: ./backend/.env
+  environment:
+    DATABASE_URL: postgresql://achou:achou_dev@postgres:5432/achou_marketplace?schema=public
+    REDIS_HOST: redis
+    REDIS_PORT: 6379
+    # Fixadas aqui porque observability/prometheus/prometheus.yml depende delas.
+    METRICS_PORT: 9464
+    WORKER_METRICS_PORT: 9465
+    # Localmente a fila e uma tabela no Postgres; na OCI, a OCI Queue.
+    FILA_DRIVER: postgres
+  depends_on:
+    postgres:
+      condition: service_healthy
+    redis:
+      condition: service_healthy
+  volumes:
+    - ./backend/src:/app/src
+    - ./backend/prisma:/app/prisma
+
+>>>>>>> Stashed changes
 services:
   postgres:
     image: postgres:17-alpine

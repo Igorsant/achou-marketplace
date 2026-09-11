@@ -112,6 +112,11 @@ flowchart TB
 | [docs/data-model.md](docs/data-model.md) | Modelagem do banco: diagrama ER, tabelas, índices e decisões |
 | [docs/api-design.md](docs/api-design.md) | Contrato da API: rotas, erros, cache e busca |
 | [docs/setup.md](docs/setup.md) | Subir o ambiente local e rodar migrations |
+<<<<<<< Updated upstream
+=======
+| [docs/observabilidade.md](docs/observabilidade.md) | Métricas Prometheus, dashboard Grafana e alertas |
+| [docs/deploy.md](docs/deploy.md) | Deploy na Oracle Cloud (Always Free) com Terraform e Kubernetes |
+>>>>>>> Stashed changes
 | [docs/achou-marketplace.postman_collection.json](docs/achou-marketplace.postman_collection.json) | Collection do Postman com as rotas e testes |
 
 ## 1. Disciplinas Aplicadas (Ordenadas por Nível de Importância)
