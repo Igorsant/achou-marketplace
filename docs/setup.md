@@ -48,6 +48,7 @@ CACHE_TTL_PRODUCT=300
 CACHE_TTL_LIST=120
 OUTBOX_POLL_INTERVAL_MS=5000
 OUTBOX_BATCH_SIZE=100
+NOTIFICATION_MOCK_FAILURE_RATE=0
 ```
 
 > `DATABASE_URL` e `REDIS_HOST` acima usam `localhost` porque servem aos comandos
@@ -62,9 +63,19 @@ os servicos continuam nas portas normais.
 
 | Servico | Host | Container |
 |---|---|---|
-| API | **3001** | 3000 |
+| API | **3001** | 3000 (metricas em 9464, so na rede interna) |
+| Worker | — | metricas em 9465, so na rede interna |
 | PostgreSQL | **5433** | 5432 |
 | Redis | **6380** | 6379 |
+| Prometheus | **9090** | 9090 |
+| Grafana | **3002** | 3000 — login `admin` / `achou_dev` |
+
+O `worker` usa a mesma imagem da API com outro entrypoint (`src/worker.ts`):
+roda o relay do outbox e o consumidor da fila de notificacoes. Nao atende HTTP;
+so serve `/metrics` para o Prometheus. Fora do Docker: `npm run start:worker:dev`
+em `backend/`.
+
+Metricas, dashboard e alertas: [observabilidade.md](observabilidade.md).
 
 ## Usuarios do seed
 
@@ -173,6 +184,53 @@ curl "$API/products?q=chuteira"
 > ou reinicie a API (`docker compose restart api`) para zerar o contador --
 > o throttler guarda estado em memoria.
 
+## Testar a fila de notificacoes
+
+Todo cadastro grava um evento `usuario.cadastrado` no outbox, e o worker
+manda um e-mail de boas-vindas (mock -- so aparece no log).
+
+```bash
+curl -X POST $API/auth/register -H 'Content-Type: application/json' -d '{
+  "email":"novo@teste.com","password":"senha12345","name":"Novo","role":"COMPRADOR"
+}'
+
+docker logs -f achou_worker
+# [OutboxRelayService] 1 evento(s) publicados na fila
+# [EmailMock] enviado mock-... para=novo@teste.com assunto="Bem-vindo(a) ao Achou!"
+```
+
+Helper: [`scripts/fila.sh`](../scripts/fila.sh)
+
+```bash
+./scripts/fila.sh stats     # pendentes no outbox + jobs por estado
+./scripts/fila.sh falhas    # jobs que esgotaram as 5 tentativas, com o motivo
+./scripts/fila.sh retry     # reprocessa os jobs em failed
+./scripts/fila.sh logs      # log do worker
+```
+
+**Simular falha do provedor de e-mail** (a variavel so vale para este container):
+
+```bash
+docker compose stop worker
+docker compose run --rm -e NOTIFICATION_MOCK_FAILURE_RATE=1 worker
+# cadastre alguem e veja as tentativas 1/5 ... 5/5 com backoff de 2s, 4s, 8s, 16s
+# Ctrl+C, depois:
+docker compose start worker
+./scripts/fila.sh retry     # agora o envio passa
+```
+
+**Simular a fila fora do ar:**
+
+```bash
+docker compose stop redis
+# cadastre alguem: a API responde 201 e o evento fica pendente
+./scripts/fila.sh stats     # (falha: o script precisa do Redis)
+docker exec achou_postgres psql -U achou -d achou_marketplace -c \
+  "SELECT type, created_at FROM outbox_events WHERE published_at IS NULL;"
+docker compose start redis
+# em ate ~10s o worker publica o evento e o e-mail sai
+```
+
 ## Collection do Postman
 
 [`docs/achou-marketplace.postman_collection.json`](achou-marketplace.postman_collection.json)
@@ -243,5 +301,6 @@ O `<sha1>` sao 16 caracteres do hash dos parametros da query **ordenados**, enta
 
 > `keyspace_hits`/`keyspace_misses` do `INFO stats` sao contadores **do servidor
 > inteiro e acumulados desde que o container subiu** -- servem para uma leitura
-> aproximada, nao para medir uma rota especifica. Instrumentacao por endpoint
-> ainda nao existe.
+> aproximada, nao para medir uma rota especifica. O hit rate da aplicacao, por
+> tipo de chave, esta na metrica `achou_cache_consultas_total` e no painel
+> "Cache hit rate" do Grafana ([observabilidade.md](observabilidade.md)).

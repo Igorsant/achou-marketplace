@@ -1,0 +1,27 @@
+# Gateway API, nao Ingress: o ingress-nginx foi aposentado em marco de 2026
+# (sem correcoes nem patches de seguranca desde entao), e o Gateway API e o
+# padrao que as nuvens e os controladores atuais implementam.
+#
+# A aplicacao so publica a rota. O Gateway em si (listener, certificado TLS,
+# IP publico) e da plataforma e vem do Terraform: nome "publico", namespace
+# "gateway", aceitando rotas do namespace "achou".
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: api
+spec:
+  parentRefs:
+    - name: publico
+      namespace: gateway
+  # Trocado pelo overlay de cada ambiente.
+  hostnames:
+    - api.achou.example
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        # So a porta http. A de metricas nunca e publicada.
+        - name: api
+          port: 80

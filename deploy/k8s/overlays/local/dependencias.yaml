@@ -1,0 +1,98 @@
+# SO PARA O CLUSTER LOCAL. Sem volume persistente, sem replica, sem backup:
+# em producao Postgres e Redis sao gerenciados e vem do Terraform.
+#
+# Namespace proprio porque as imagens oficiais sobem como root, e o namespace
+# "achou" aplica a politica "restricted", que recusaria esses pods.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: achou-dependencias
+  labels:
+    deploy.achou/etapa: pre-requisito
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  labels:
+    deploy.achou/etapa: pre-requisito
+  namespace: achou-dependencias
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          env:
+            - name: POSTGRES_USER
+              value: achou
+            - name: POSTGRES_PASSWORD
+              value: achou_dev
+            - name: POSTGRES_DB
+              value: achou_marketplace
+          ports:
+            - containerPort: 5432
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "achou", "-d", "achou_marketplace"]
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  labels:
+    deploy.achou/etapa: pre-requisito
+  namespace: achou-dependencias
+spec:
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  labels:
+    deploy.achou/etapa: pre-requisito
+  namespace: achou-dependencias
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redis
+  template:
+    metadata:
+      labels:
+        app: redis
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          ports:
+            - containerPort: 6379
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 3
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  labels:
+    deploy.achou/etapa: pre-requisito
+  namespace: achou-dependencias
+spec:
+  selector:
+    app: redis
+  ports:
+    - port: 6379

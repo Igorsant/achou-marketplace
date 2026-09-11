@@ -1,0 +1,58 @@
+# Producao. Tudo o que depende da infraestrutura (registro de imagens,
+# dominio, Secret com as credenciais) vem do Terraform -- ver docs/deploy.md,
+# secao "Contrato com o Terraform".
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+
+# A tag nao fica aqui: scripts/deploy.sh aplica a tag da versao sendo publicada.
+images:
+  - name: achou-backend
+    newName: registry.example.com/achou/achou-backend # TODO(terraform): URL do registro
+  - name: achou-backend-migrate
+    newName: registry.example.com/achou/achou-backend-migrate # TODO(terraform): URL do registro
+
+patches:
+  - target:
+      kind: HTTPRoute
+      name: api
+    patch: |-
+      - op: replace
+        path: /spec/hostnames
+        value: ["api.achou.example"] # TODO(terraform): dominio real
+
+  - target:
+      kind: ScaledObject
+      name: api
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicaCount
+        value: 20
+      # Pre-provisionamento de campanha (README, "Tatica de Contingencia"):
+      # sobe as replicas horas antes, sem esperar a CPU subir. O KEDA usa o
+      # maior valor entre os gatilhos, entao a escala por CPU continua valendo
+      # por cima destas 8.
+      # Cron nao tem ano: a janela se repete todo ano nas mesmas datas.
+      # Black Friday muda de dia -- revisar a cada campanha.
+      - op: add
+        path: /spec/triggers/-
+        value:
+          type: cron
+          metadata:
+            timezone: America/Sao_Paulo
+            start: "0 18 26 11 *"   # quinta 26/11, 18h: vespera da Black Friday 2026
+            end: "59 23 30 11 *"    # ate o fim da Cyber Monday
+            desiredReplicas: "8"
+
+  - target:
+      kind: ScaledObject
+      name: worker
+    patch: |-
+      - op: replace
+        path: /spec/minReplicaCount
+        value: 2
+      - op: replace
+        path: /spec/maxReplicaCount
+        value: 6

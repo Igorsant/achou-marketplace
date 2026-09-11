@@ -2,6 +2,16 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import Redis from 'ioredis';
+import { Counter } from 'prom-client';
+import { conexaoRedis } from '../common/redis.config';
+
+// hit / (hit + miss + indisponivel + erro) e o hit rate que a estrategia de
+// "cache primeiro" do README precisa provar. Tudo que nao e hit foi ao Postgres.
+const consultas = new Counter({
+  name: 'achou_cache_consultas_total',
+  help: 'Leituras do cache Redis por resultado',
+  labelNames: ['prefixo', 'resultado'],
+});
 
 @Injectable()
 export class CacheService implements OnModuleInit, OnModuleDestroy {
@@ -12,14 +22,16 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly config: ConfigService) {}
 
   onModuleInit() {
-    this.client = new Redis({
-      host: this.config.get<string>('REDIS_HOST', 'localhost'),
-      port: Number(this.config.get<string>('REDIS_PORT', '6379')),
+    const opcoes = {
       // Sem retry infinito: se o Redis nao volta, a API segue no Postgres.
       maxRetriesPerRequest: 2,
       lazyConnect: false,
-      retryStrategy: (tentativas) => Math.min(tentativas * 200, 3000),
-    });
+      retryStrategy: (tentativas: number) => Math.min(tentativas * 200, 3000),
+    };
+    const conexao = conexaoRedis(this.config, 'CACHE');
+    this.client = 'url' in conexao
+      ? new Redis(conexao.url, opcoes)
+      : new Redis({ ...conexao, ...opcoes });
 
     this.client.on('ready', () => {
       this.disponivel = true;
@@ -57,11 +69,19 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
    * latencia, nao disponibilidade.
    */
   async get<T>(chave: string): Promise<T | null> {
-    if (!this.disponivel) return null;
+    // "product:<uuid>" -> "product"; "products:list:<hash>" -> "products:list".
+    // O sufixo varia por consulta e explodiria a cardinalidade do rotulo.
+    const prefixo = chave.slice(0, chave.lastIndexOf(':'));
+    if (!this.disponivel) {
+      consultas.inc({ prefixo, resultado: 'indisponivel' });
+      return null;
+    }
     try {
       const bruto = await this.client.get(chave);
+      consultas.inc({ prefixo, resultado: bruto ? 'hit' : 'miss' });
       return bruto ? (JSON.parse(bruto) as T) : null;
     } catch (err) {
+      consultas.inc({ prefixo, resultado: 'erro' });
       this.logger.warn(`Falha ao ler ${chave}: ${(err as Error).message}`);
       return null;
     }

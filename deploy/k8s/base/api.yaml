@@ -1,0 +1,155 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  labels:
+    app.kubernetes.io/name: api
+spec:
+  # Sem "replicas": quem decide e o KEDA (api-escala.yaml). Com o campo aqui,
+  # todo `kubectl apply` voltaria o numero de pods ao valor fixo no meio de um pico.
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      # Sobe o pod novo antes de derrubar o antigo: a capacidade nunca cai
+      # durante o deploy, nem em horario de campanha.
+      maxSurge: 25%
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: api
+    spec:
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      # Espalha as replicas por zona e por node: perder uma zona inteira
+      # nao derruba a API.
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: api
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/name: api
+      containers:
+        - name: api
+          image: achou-backend
+          ports:
+            - name: http
+              containerPort: 3000
+            - name: metrics
+              containerPort: 9464
+          envFrom:
+            - configMapRef:
+                name: achou-config
+            - secretRef:
+                name: achou-secrets
+          env:
+            # Heap abaixo do limite de memoria do container: estourar o heap da
+            # um erro do Node com stack; estourar o limite, um OOMKill mudo.
+            - name: NODE_OPTIONS
+              value: --max-old-space-size=384
+          resources:
+            # O gatilho de escala e absoluto (700m, em api-escala.yaml), nao
+            # uma porcentagem do request -- entao o request pode refletir o uso
+            # tipico sem mexer no ponto de escala.
+            # Sem limite de CPU: o Node usa uma thread para o JavaScript, mas
+            # GC e libuv usam outras, e o throttling do limite viraria latencia.
+            requests:
+              cpu: 500m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+          # /health/live nao consulta Postgres nem Redis de proposito: ver
+          # backend/src/health/health.controller.ts.
+          startupProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 2
+            failureThreshold: 30
+          # Timeouts folgados de proposito. Sob CPU alta (o pico que o HPA ainda
+          # nao absorveu) a probe demora; com o timeout padrao de 1s, o
+          # Kubernetes tira do Service justamente os pods ocupados, a carga cai
+          # nos que sobram, e a falha vira cascata. Visto no teste com o node
+          # do kind saturado.
+          readinessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          # Liveness detecta travamento, nao sobrecarga. A probe disputa o mesmo
+          # event loop das requisicoes: sob pico, espera na fila junto com
+          # elas. Com 30s de tolerancia, o teste de carga no cluster local fez
+          # o Kubernetes reiniciar os dois pods da API no meio do pico -- metade
+          # da capacidade jogada fora na pior hora. 90s sem resposta e trava.
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 9
+          lifecycle:
+            # O pod sai dos endpoints do Service de forma assincrona. Sem esta
+            # pausa, o SIGTERM chega antes de o gateway parar de mandar
+            # trafego, e as requisicoes que ainda chegam levam conexao recusada.
+            preStop:
+              sleep:
+                seconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  labels:
+    app.kubernetes.io/name: api
+spec:
+  selector:
+    app.kubernetes.io/name: api
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+    # Nao aparece na rota publica (rota.yaml aponta so para a porta 80).
+    - name: metrics
+      port: 9464
+      targetPort: metrics
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api
+spec:
+  # Manutencao de node (upgrade do cluster) derruba no maximo um pod por vez.
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: api

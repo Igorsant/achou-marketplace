@@ -1,0 +1,39 @@
+# KEDA em vez de HorizontalPodAutoscaler puro: o mesmo objeto combina a escala
+# por CPU com a escala agendada de campanha (o overlay de producao adiciona o
+# gatilho cron). O KEDA cria e gerencia o HPA por baixo.
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: api
+spec:
+  scaleTargetRef:
+    name: api
+  minReplicaCount: 2
+  maxReplicaCount: 10
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        # Pico de 20x chega em segundos: sobe sem janela de estabilizacao,
+        # dobrando a cada 30s se preciso.
+        scaleUp:
+          stabilizationWindowSeconds: 0
+          policies:
+            - type: Percent
+              value: 100
+              periodSeconds: 30
+        # Desce devagar: 5 min de calma e um pod por minuto. Evita derrubar
+        # replicas entre duas ondas de trafego da mesma campanha.
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+  triggers:
+    # 70% de UM nucleo, em valor absoluto. Como porcentagem ("Utilization"), o
+    # HPA mediria sobre o request (500m) e escalaria em 350m. Assim o gatilho
+    # coincide com o alerta CpuNoGatilhoDeEscala e com o painel do Grafana.
+    - type: cpu
+      metricType: AverageValue
+      metadata:
+        value: 700m

@@ -1,0 +1,17 @@
+# Faz o Prometheus do kube-prometheus-stack raspar a API e o worker.
+# O rotulo "job" das series vira o nome do Service ("api", "worker"): o mesmo
+# do docker-compose, entao dashboard e alertas funcionam sem mudanca.
+#
+# Regras de alerta e dashboard nao estao aqui: scripts/deploy.sh gera os dois
+# a partir de observability/, a fonte unica usada tambem no ambiente local.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: achou
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: achou
+  endpoints:
+    - port: metrics
+      interval: 15s

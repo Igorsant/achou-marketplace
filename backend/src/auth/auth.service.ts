@@ -7,6 +7,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { JwtPayload } from './jwt.strategy';
+import { Eventos, registrarEvento } from '../outbox/eventos';
 
 @Injectable()
 export class AuthService {
@@ -25,20 +26,30 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
+    const slug = dto.role === Role.LOJISTA ? await this.gerarSlug(dto.storeName!) : undefined;
 
-    const user = await this.prisma.user.create({
-      data: {
-        email: dto.email,
-        passwordHash,
-        name: dto.name,
-        role: dto.role,
-        // Lojista ganha loja; comprador ganha carrinho. Criar aqui evita
-        // ter que tratar "carrinho ausente" em toda rota de carrinho.
-        ...(dto.role === Role.LOJISTA
-          ? { seller: { create: { storeName: dto.storeName!, slug: await this.gerarSlug(dto.storeName!) } } }
-          : { cart: { create: {} } }),
-      },
-      include: { seller: true },
+    const user = await this.prisma.$transaction(async (tx) => {
+      const criado = await tx.user.create({
+        data: {
+          email: dto.email,
+          passwordHash,
+          name: dto.name,
+          role: dto.role,
+          // Lojista ganha loja; comprador ganha carrinho. Criar aqui evita
+          // ter que tratar "carrinho ausente" em toda rota de carrinho.
+          ...(dto.role === Role.LOJISTA
+            ? { seller: { create: { storeName: dto.storeName!, slug: slug! } } }
+            : { cart: { create: {} } }),
+        },
+        include: { seller: true },
+      });
+
+      // Mesma transacao do cadastro: a notificacao de boas-vindas nao se perde
+      // se a fila estiver fora do ar, e nao sai para usuario que nao existe.
+      await registrarEvento(tx, Eventos.USUARIO_CADASTRADO, {
+        userId: criado.id, email: criado.email, name: criado.name, role: criado.role,
+      });
+      return criado;
     });
 
     return this.montarResposta(user.id, user.email, user.role, user.name, user.seller?.id);

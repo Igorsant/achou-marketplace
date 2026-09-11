@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/name: worker
+spec:
+  # Sem "replicas": quem decide e o KEDA (worker-escala.yaml).
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: worker
+    spec:
+      # O BullMQ termina os jobs em andamento antes de sair (enableShutdownHooks
+      # em src/worker.ts). Envio de e-mail leva menos de 1s; 60s e folga.
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: worker
+          image: achou-backend
+          command: ["node", "dist/worker"]
+          ports:
+            - name: metrics
+              containerPort: 9465
+          envFrom:
+            - configMapRef:
+                name: achou-config
+            - secretRef:
+                name: achou-secrets
+          env:
+            - name: NODE_OPTIONS
+              value: --max-old-space-size=256
+          resources:
+            requests:
+              cpu: 100m
+              memory: 192Mi
+            limits:
+              memory: 384Mi
+          # O worker nao atende HTTP; o servidor de metricas expoe /live.
+          startupProbe:
+            httpGet:
+              path: /live
+              port: metrics
+            periodSeconds: 2
+            failureThreshold: 30
+          livenessProbe:
+            httpGet:
+              path: /live
+              port: metrics
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}
+---
+# Existe so para o Prometheus descobrir os pods: nada chama o worker por aqui.
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker
+  labels:
+    app.kubernetes.io/name: worker
+spec:
+  selector:
+    app.kubernetes.io/name: worker
+  ports:
+    - name: metrics
+      port: 9465
+      targetPort: metrics
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: worker
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: worker

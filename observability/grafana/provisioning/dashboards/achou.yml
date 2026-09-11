@@ -1,0 +1,12 @@
+apiVersion: 1
+
+providers:
+  - name: achou
+    folder: Achou!
+    type: file
+    # O JSON versionado no git e a fonte da verdade: edicao pela interface
+    # nao persiste. Para mudar um painel, exporte o JSON e substitua o arquivo.
+    allowUiUpdates: false
+    disableDeletion: true
+    options:
+      path: /etc/grafana/dashboards

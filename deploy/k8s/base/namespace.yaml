@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: achou
+  labels:
+    deploy.achou/etapa: pre-requisito
+    # Pods sem root, sem privilegio e com seccomp: o admission controller
+    # recusa qualquer pod deste namespace que fuja disso.
+    pod-security.kubernetes.io/enforce: restricted

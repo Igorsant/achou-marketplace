@@ -319,7 +319,64 @@ sob `try/catch` que devolve `null` em falha, e o chamador segue para o Postgres.
 Redis fora do ar degrada latência, não disponibilidade — verificado derrubando o
 container: a API continuou respondendo `200`.
 
-### 3.7 Rate limiting
+### 3.7 Notificações assíncronas (outbox + fila)
+
+✅ Implementado para o evento `usuario.cadastrado` (e-mail de boas-vindas). O
+mesmo caminho serve para `pedido.criado` quando o checkout existir.
+
+```
+POST /auth/register                         processo worker (separado da API)
+┌──────────────────────────────┐    ┌──────────────────────────────────────────────┐
+│ BEGIN                        │    │ relay (a cada 5s)        processor           │
+│   INSERT users               │    │ SELECT ... FOR UPDATE    ┌──────────────────┐│
+│   INSERT outbox_events ──────┼───►│   SKIP LOCKED  ──addBulk─► fila notificacoes││
+│ COMMIT                       │    │ UPDATE published_at      └────────┬─────────┘│
+└──────────────────────────────┘    │                                   ▼          │
+                                    │     processed_events? ─não─► e-mail (mock)   │
+                                    └──────────────────────────────────────────────┘
+```
+
+| Peça | Arquivo | Papel |
+|---|---|---|
+| Catálogo de eventos | `src/outbox/eventos.ts` | Tipos, payloads e `registrarEvento(tx, ...)` |
+| Rotas | `src/queue/filas.ts` | Qual fila recebe cada tipo de evento |
+| Relay | `src/outbox/outbox-relay.service.ts` | Drena o outbox para o BullMQ |
+| Consumidor | `src/notifications/notifications.processor.ts` | Idempotência + envio |
+| Provedor | `src/notifications/email-mock.service.ts` | E-mail falso com latência e falha simulada |
+| Processo | `src/worker.ts` | Entrypoint separado; a API nem conecta no BullMQ |
+
+**Garantias, cada uma verificada na implementação:**
+
+- **O cadastro não depende da fila.** Com o Redis parado, `POST /auth/register`
+  responde `201` normalmente; o evento fica pendente no outbox e é entregue
+  assim que o Redis volta.
+- **Entrega at-least-once, efeito exactly-once.** Duas barreiras contra
+  duplicata: o `jobId` do BullMQ é o id do evento (republicar é no-op) e o
+  consumidor checa `processed_events` antes de enviar. Forçando a reentrega de
+  um evento já notificado, o worker registra `ja notificado, ignorando duplicata`.
+- **Retry com backoff exponencial.** 5 tentativas, esperas de 2s, 4s, 8s e 16s.
+  Esgotadas, o job fica em `failed` por 7 dias para inspeção e reprocesso
+  (`scripts/fila.sh retry`).
+- **Réplicas concorrentes não disputam linhas.** `FOR UPDATE SKIP LOCKED` faz
+  cada worker pegar um lote diferente do outbox.
+
+**Detalhes que custaram a descobrir:**
+
+- Com o Redis fora, o ioredis **não falha**: segura o comando na fila offline
+  até reconectar. O relay ficava parado em silêncio segurando a transação. Agora
+  o `addBulk` tem prazo de 5s; estourou, a transação desfaz e o evento continua
+  pendente. Enquanto o comando preso não sai, o relay não tenta de novo — senão
+  empilharia uma cópia por ciclo na fila offline.
+- Sem listener de `'error'` na Queue e no Worker, o BullMQ imprime uma stack
+  inteira **a cada tentativa de reconexão**. Os listeners logam no máximo uma
+  linha a cada 30s.
+- O `processed_events` é gravado **depois** do envio: se o worker cair no meio,
+  o retry reenvia. E-mail duplicado é preferível a e-mail perdido.
+
+**Simular falha do provedor:** `NOTIFICATION_MOCK_FAILURE_RATE` (0 a 1) no
+`.env`. Com `1`, todo envio falha e dá para ver as 5 tentativas no log.
+
+### 3.8 Rate limiting
 
 | Escopo | Limite |
 |---|---|
@@ -450,8 +507,10 @@ backend/src/
 ├── cart/
 ├── orders/        checkout (transação + outbox)
 ├── payments/      adapter mock com delay simulado
-├── outbox/        relay agendado
-├── workers/       consumidores BullMQ (notificação, analytics)
+├── outbox/        catálogo de eventos + relay agendado
+├── queue/         conexão BullMQ e rotas evento → fila
+├── notifications/ consumidor da fila de notificações + e-mail mock
+├── worker.ts      entrypoint do processo assíncrono
 ├── cache/         wrapper Redis
 └── prisma/        PrismaService
 ```
@@ -482,7 +541,7 @@ Mapeado sobre o cronograma de 4 aulas do README.
 
 - [ ] `POST /orders` com transação, estoque condicional e idempotência
 - [ ] Pagamento mock + máquina de estados
-- [ ] Relay do outbox + worker de notificação
+- [x] Relay do outbox + worker de notificação (hoje disparado pelo cadastro; falta plugar `pedido.criado`)
 - [ ] Teste de carga com k6 em `GET /products`
 
 ### Ordem de implementação sugerida

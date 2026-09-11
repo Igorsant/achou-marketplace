@@ -1,0 +1,62 @@
+# Roda `prisma migrate deploy` ANTES do rolling update (scripts/deploy.sh
+# aplica este Job, espera terminar e so entao aplica o resto).
+#
+# Durante o rolling update, pods da versao antiga e da nova convivem com o
+# schema novo. Toda migration precisa ser compativel com o codigo anterior:
+# adicionar coluna nullable, sim; renomear ou apagar coluna em uso, nunca num
+# deploy so (expand/contract).
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: migracao
+  labels:
+    app.kubernetes.io/name: migracao
+    deploy.achou/etapa: migracao
+spec:
+  # Migration que falhou nao se repete sozinha: pode ter aplicado parte do SQL,
+  # e rodar de novo as cegas piora. O deploy para e alguem olha o log.
+  backoffLimit: 0
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 86400
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: migracao
+    spec:
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: migracao
+          image: achou-backend-migrate
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: achou-secrets
+                  key: DATABASE_URL
+            # O CLI do Prisma consulta um servidor externo de telemetria e
+            # grava cache em $HOME, que aqui e somente leitura.
+            - name: CHECKPOINT_DISABLE
+              value: "1"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

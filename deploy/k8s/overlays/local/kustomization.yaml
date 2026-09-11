@@ -1,0 +1,46 @@
+# Cluster local (kind) para testar os manifests. Postgres e Redis rodam dentro
+# do cluster so aqui; em producao sao servicos gerenciados.
+#
+#   kind create cluster --name achou
+#   docker build --target production -t achou-backend:dev backend/
+#   docker build --target migrate    -t achou-backend-migrate:dev backend/
+#   kind load docker-image achou-backend:dev achou-backend-migrate:dev --name achou
+#   scripts/deploy.sh local dev
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - ../../base
+  - dependencias.yaml
+
+secretGenerator:
+  - name: achou-secrets
+    namespace: achou
+    options:
+      labels:
+        deploy.achou/etapa: pre-requisito
+    literals:
+      - DATABASE_URL=postgresql://achou:achou_dev@postgres.achou-dependencias.svc:5432/achou_marketplace?schema=public
+      # Uma instancia so, bancos logicos diferentes: separa as chaves do cache
+      # e da fila, mas nao as politicas de memoria -- isso so em producao.
+      - REDIS_CACHE_URL=redis://redis.achou-dependencias.svc:6379/0
+      - REDIS_FILA_URL=redis://redis.achou-dependencias.svc:6379/1
+      - JWT_SECRET=dev_local_trocar
+
+configMapGenerator:
+  - name: achou-config
+    namespace: achou
+    behavior: merge
+    literals:
+      # kubectl port-forward chega no pod pelo loopback: confiar nele permite
+      # testar o X-Forwarded-For localmente.
+      - TRUST_PROXY=loopback,uniquelocal
+
+patches:
+  - target:
+      kind: ScaledObject
+      name: api
+    patch: |-
+      - op: replace
+        path: /spec/maxReplicaCount
+        value: 4
