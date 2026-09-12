@@ -1,0 +1,193 @@
+# Valida que o codigo continua cumprindo os ADRs de docs/adr/.
+#
+# A ideia: um ADR aceito e uma afirmacao sobre o sistema. Se ninguem verifica,
+# ele envelhece em silencio e vira ficcao — alguem tira o @unique de
+# orders.idempotency_key, alguem apaga a checagem de `type: refresh`, e os
+# documentos continuam dizendo que a decisao vale.
+#
+# Quatro niveis, do mais barato ao mais caro:
+#
+#   higiene       o ADR esta bem formado, indexado e seus links resolvem
+#   conformidade  o codigo-fonte materializa cada decisao (grep estrutural)
+#   compila       o backend que as decisoes descrevem realmente builda
+#   banco         as constraints que as decisoes dependem existem no Postgres
+#
+# E um relatorio que nunca derruba nada: pendencias. Os ADRs registram o que
+# falta (ADR 0003 §5 chama de "o resto da feature"). Se isso falhasse o build,
+# o pipeline nasceria vermelho e perderia a funcao de sinal.
+name: ADR
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: adr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  higiene:
+    name: higiene dos ADRs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # git grep de marcador de conflito precisa do indice, nao de um
+          # tarball; a profundidade 1 basta.
+          fetch-depth: 1
+      - run: scripts/adr-check.sh docs
+
+  conformidade:
+    # Um job por ADR: o check do PR diz qual decisao quebrou, sem abrir o log.
+    name: conformidade ADR ${{ matrix.adr }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        adr: ['0001', '0002', '0003']
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/adr-check.sh ${{ matrix.adr }}
+
+  compila:
+    # Sem isto a conformidade seria grep sobre texto: um arquivo pode conter
+    # `payload.type === 'refresh'` e nao compilar.
+    name: backend compila e schema valida
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+      # `prisma validate` le env("DATABASE_URL"): o valor nao e usado para
+      # conectar, so precisa existir.
+      - name: prisma validate
+        run: npx prisma validate
+        env:
+          DATABASE_URL: postgresql://ci:ci@localhost:5432/ci?schema=public
+      - run: npx prisma generate
+      - run: npm run build
+      # `npm run lint` e `npm test` estao declarados no package.json mas eslint e
+      # jest nao estao instalados. Entram aqui quando entrarem no projeto.
+
+  banco:
+    # Grep no schema.prisma prova intencao. Isto prova resultado: as migrations
+    # aplicam e o Postgres tem as constraints de que as decisoes dependem.
+    name: invariantes no banco
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: achou
+          POSTGRES_PASSWORD: achou_ci
+          POSTGRES_DB: achou_ci
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U achou -d achou_ci"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql://achou:achou_ci@localhost:5432/achou_ci?schema=public
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+        working-directory: backend
+      - name: aplicar migrations
+        run: npx prisma migrate deploy
+        working-directory: backend
+      - name: invariantes de ADR no banco
+        run: scripts/adr-check.sh banco
+      - name: drift entre migrations e schema.prisma (informativo)
+        # Nao bloqueia: `search_vector` e coluna GERADA pelo Postgres, declarada
+        # no schema so para o migrate nao acusar drift. O diff pode enxergar
+        # diferenca na expressao da coluna sem que haja divergencia real.
+        continue-on-error: true
+        run: npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+        working-directory: backend
+
+  integracao:
+    # O nivel que responde "a feature funciona?" em vez de "a decisao esta
+    # escrita no codigo?". Sobe o AppModule de verdade contra um Postgres de
+    # verdade e exerce as rotas. Sem Redis de proposito: o CacheService degrada
+    # para o banco quando ele falta, e nenhum ADR afirma nada sobre cache — se
+    # um teste aqui passar a depender do Redis, e sinal de que o cache saiu do
+    # papel de otimizacao.
+    name: integracao — comportamento dos ADRs
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: achou
+          POSTGRES_PASSWORD: achou_ci
+          # Ja nasce com o nome que o harness exige (sufixo _test).
+          POSTGRES_DB: achou_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U achou -d achou_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      DATABASE_URL_TEST: postgresql://achou:achou_ci@localhost:5432/achou_test?schema=public
+      # Sem `.env` no CI, o fallback 'dev_secret' do §4 entraria em acao. Um
+      # segredo explicito prova que a suite passa fora do caminho do fallback.
+      JWT_SECRET: ci_secret_nao_e_de_producao
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci
+        working-directory: backend
+      - run: npx prisma generate
+        working-directory: backend
+      - run: scripts/test-e2e.sh --ci
+
+  app:
+    name: app analisa e testa
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: app_achou
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      # As decisoes do lado do app (§5 do ADR 0001, §2.1 do ADR 0002) valem
+      # sobre codigo que analisa limpo.
+      - run: flutter analyze
+      - run: flutter test
+
+  pendencias:
+    # Relatorio, nao porteiro. Sai 0 sempre — o valor esta no resumo do job, que
+    # mostra o que os ADRs assumiram como divida e o que ja foi resolvido sem o
+    # ADR ter sido atualizado.
+    name: pendencias declaradas
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: scripts/adr-check.sh pendencias

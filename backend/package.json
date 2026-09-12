@@ -10,6 +10,7 @@
     "start:prod": "node dist/main",
     "lint": "eslint \"src/**/*.ts\" --fix",
     "test": "jest",
+    "test:e2e": "jest --config test/jest-e2e.config.ts",
     "prisma:generate": "prisma generate",
     "migrate:new": "prisma migrate dev --create-only --name",
     "migrate:apply": "prisma migrate dev",
@@ -42,9 +43,15 @@
   "devDependencies": {
     "@nestjs/cli": "^11.0.24",
     "@nestjs/schematics": "^11.1.0",
+    "@nestjs/testing": "^11.2.3",
+    "@types/jest": "^30.0.0",
     "@types/node": "^22.20.2",
     "@types/passport-jwt": "^4.0.1",
+    "@types/supertest": "^7.2.1",
+    "jest": "^30.5.1",
     "prisma": "^6.19.3",
+    "supertest": "^7.2.2",
+    "ts-jest": "^29.4.12",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   },

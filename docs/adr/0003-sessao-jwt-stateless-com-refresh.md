@@ -4,8 +4,10 @@
 |---|---|
 | **Status** | Aceito — com pendências bloqueantes em §5 |
 | **Data** | 2026-09-11 |
+| **Implementação** | Backend completo; app com duas pendências — ver §5 |
 | **Contexto de origem** | [`template-features.md`](../../template-features.md) — Feature 3, `Autenticação de dados via login` |
 | **Decisores** | Equipe 4 |
+| **Verificação** | [`scripts/adr-check.sh 0003`](../../scripts/adr-check.sh) · [`backend/test/adr-0003-sessao.e2e-spec.ts`](../../backend/test/adr-0003-sessao.e2e-spec.ts) |
 | **Relacionado** | Desbloqueia o [ADR 0002](0002-carrinho-no-servidor-sem-reserva-de-estoque.md) §4 |
 
 ---
@@ -152,7 +154,14 @@ lojista. Deve virar falha de boot quando `NODE_ENV=production`.
 ## 5. Pendências bloqueantes
 
 Três itens em que o código entregue **não cumpre** a Feature 3 ou bloqueia as
-outras. Não são melhorias — são o resto da feature.
+outras. Não são melhorias — são o resto da feature, e é o que distingue estas
+pendências das dos ADRs 0001 e 0002: lá o escopo foi diferido de propósito,
+aqui a feature foi declarada pronta sem estar.
+
+> O §2 inteiro está coberto por
+> [`adr-0003-sessao.e2e-spec.ts`](../../backend/test/adr-0003-sessao.e2e-spec.ts):
+> 19 casos que exercem o servidor de verdade. Os itens abaixo são justamente os
+> que nenhum teste de backend pega, porque vivem no app.
 
 ### 5.1 A sessão não sobrevive a fechar o app
 

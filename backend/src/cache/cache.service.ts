@@ -2,6 +2,7 @@ import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/commo
 import { ConfigService } from '@nestjs/config';
 import { createHash } from 'node:crypto';
 import Redis from 'ioredis';
+import { conexaoRedis } from '../common/redis.config';
 
 @Injectable()
 export class CacheService implements OnModuleInit, OnModuleDestroy {
@@ -12,23 +13,16 @@ export class CacheService implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly config: ConfigService) {}
 
   onModuleInit() {
-    this.client = new Redis({
-      host: this.config.get<string>('REDIS_HOST', 'localhost'),
-      port: Number(this.config.get<string>('REDIS_PORT', '6379')),
+    const opcoes = {
       // Sem retry infinito: se o Redis nao volta, a API segue no Postgres.
       maxRetriesPerRequest: 2,
       lazyConnect: false,
-<<<<<<< Updated upstream
-      retryStrategy: (tentativas) => Math.min(tentativas * 200, 3000),
-    });
-=======
       retryStrategy: (tentativas: number) => Math.min(tentativas * 200, 3000),
     };
     const conexao = conexaoRedis(this.config);
     this.client = 'url' in conexao
       ? new Redis(conexao.url, opcoes)
       : new Redis({ ...conexao, ...opcoes });
->>>>>>> Stashed changes
 
     this.client.on('ready', () => {
       this.disponivel = true;
