@@ -54,6 +54,16 @@ suficiente para decidir cache, retry e autorização **sem abrir o corpo**. Um
 `GET` é seguro e repetível por definição do protocolo; um `POST` não é. Quem
 está na borda — gateway, proxy, CDN, o interceptor de retry do app — usa isso.
 
+**A exceção, declarada e não implícita:** `/v1/auth/login`, `/v1/auth/register`
+e `/v1/auth/refresh` são ações, não recursos. A forma estrita seria
+`POST /v1/sessions` para entrar e `DELETE /v1/sessions` para sair. Ficamos com
+os nomes de ação porque são convenção universal — todo cliente HTTP, tutorial e
+pessoa que chega ao projeto os reconhece — e porque a sessão deste sistema não
+é um recurso consultável (ADR 0003 §2.1: não existe tabela de sessão; não há o
+que fazer `GET` em `/v1/sessions`). Nomear como recurso algo que não existe
+como recurso seria pior que a exceção. A exceção está no verificador como
+allowlist explícita, para que uma rota de ação **nova** ainda falhe.
+
 ### 2.2 Versão no path (`/v1`), não em header
 
 Toda rota vive sob `/v1`. Quando houver `/v2`, as duas coexistem no mesmo

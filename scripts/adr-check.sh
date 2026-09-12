@@ -234,64 +234,108 @@ checar_docs() {
   [ "$quebrados" -eq 0 ] && ok "adr" "todos os links relativos dos ADRs resolvem"
 }
 
-# ====================================================== ADR 0001 — checkout
+# ================================================= ADR 0001 — interface REST
 
 checar_0001() {
-  titulo "ADR 0001 — checkout no app com confirmacao externa"
+  titulo "ADR 0001 — REST sobre recursos, versionada no path"
 
-  # §3.5 / §3.4 do api-design: o pedido nasce congelado. Se order_items perder o
-  # snapshot, reajuste de preco reescreve pedido passado.
-  exige_modelo "§3.3" OrderItem 'unitPriceCents +Int' "order_items congela unit_price_cents no momento da compra"
-  exige_modelo "§3.3" OrderItem 'titleSnapshot +String' "order_items congela title_snapshot no momento da compra"
-  proibe_modelo "§3.3" OrderItem 'priceCents +Int +@relation' "order_items nao le preco do produto por relacao"
+  local controllers rotas
 
-  # §3.3: sem UNIQUE, duplo-toque gera dois pedidos.
-  exige_modelo "§3.1" Order 'idempotencyKey +String +@unique' "orders.idempotency_key e UNIQUE (duplo-toque nao cria dois pedidos)"
-  exige_modelo "§3.5" Order 'status +OrderStatus +@default\(PENDING_PAYMENT\)' "pedido nasce em PENDING_PAYMENT"
-
-  # §3.4-3.5 da decisao: o Payment nasce pendente e sem referencia externa;
-  # `provider` fica texto porque o terceiro valor sera o nome do PSP.
-  exige_modelo "§3.5" Payment 'status +PaymentStatus +@default\(PENDING\)' "payment nasce PENDING"
-  exige_modelo "§3.5" Payment 'providerRef +String\?' "providerRef e nulo ate existir comprovante"
-  exige_modelo "§3.5" Payment 'provider +String( |$)' "payments.provider continua texto livre, nao enum"
-  proibe "§3.5" backend/prisma/schema.prisma 'enum +Payment?Provider' "nenhum enum de provider fecha a porta do PSP"
-
-  # A decisao afirma que nao inventa estado novo. Igualdade de conjunto.
-  enum_igual "§3.5" OrderStatus "OrderStatus e exatamente a maquina de estados documentada" \
-    PENDING_PAYMENT PAID PAYMENT_FAILED FULFILLED CANCELLED
-  enum_igual "§3.5" PaymentStatus "PaymentStatus e exatamente o documentado" \
-    PENDING AUTHORIZED DECLINED REFUNDED
-
-  # "Captura de dados de cartao no app — nunca, nem depois." E a unica linha do
-  # ADR com prazo infinito, e a mais barata de violar por acidente.
-  proibe "§3.6" app_achou/lib \
-    '(cardnumber|numerocartao|numero_cartao|cardcvv|[^a-z]cvv[^a-z]|[^a-z]cvc[^a-z]|securitycode|codigoseguranca|expirymonth|expiryyear|validadecartao|cardholder)' \
-    "o app nao coleta dado de cartao (escopo PCI-DSS fica fora, hoje e depois)"
-  proibe "§3.6" backend/src \
-    '(cardnumber|numerocartao|numero_cartao|cardcvv|[^a-z]cvv[^a-z]|[^a-z]cvc[^a-z]|securitycode|codigoseguranca|expirymonth|expiryyear|cardholder)' \
-    "o backend nao recebe dado de cartao"
-
-  # §3.3 e a promessa de custo de troca: a chave sai do cliente e a abstracao
-  # absorve Mock -> Http sem tocar em tela.
-  exige "§3.1" app_achou/lib/features/checkout/checkout_page.dart 'idempotencyKey' \
-    "checkout manda Idempotency-Key gerada no cliente"
-  exige "§5" app_achou/lib/data/repositories/checkout_repository.dart 'abstract class CheckoutRepository' \
-    "a abstracao que absorve a troca Mock -> Http continua no lugar"
-  proibe "§5" app_achou/lib/features 'MockCheckoutRepository' \
-    "nenhuma tela conhece o repositorio mock"
-  proibe "§5" app_achou/lib/state 'MockCheckoutRepository' \
-    "o escopo do app depende da abstracao, nao da implementacao mock"
-
-  # Checagens que se armam sozinhas quando o modulo de pedidos nascer.
-  if [ -d "$RAIZ/backend/src/orders" ]; then
-    exige "§3"   backend/src/orders '\$transaction' "checkout roda em transacao unica"
-    exige "§3.2" backend/src/orders 'ESTOQUE_INSUFICIENTE' "estoque insuficiente responde 409 ESTOQUE_INSUFICIENTE"
-    exige "§3.4" backend/src/orders 'outbox' "checkout grava o evento no outbox dentro da transacao"
-    exige "§3.3" backend/src/orders '(unitPriceCents|titleSnapshot)' "checkout copia preco e titulo para order_items"
-    proibe "§3.3" backend/src/orders '(priceCents *: *dto|body\.priceCents)' "o preco nunca vem do corpo da requisicao"
+  # §2.2 — todo controller do contrato do cliente vive sob /v1. `health` fica
+  # de fora de proposito: e sonda de infraestrutura, e os manifestos do
+  # Kubernetes apontam para ela sem versao.
+  controllers="$(grep -rhoE "@Controller\('[^']*'\)" "$RAIZ/backend/src" --include='*.ts' \
+    | sed -E "s/@Controller\('([^']*)'\)/\1/" | sort -u)"
+  if [ -z "$controllers" ]; then
+    falha "§2.2" "nenhum @Controller encontrado em backend/src" "backend/src"
   else
-    printf "  %s·%s %-12s modulo backend/src/orders ainda nao existe: 5 checagens armadas para quando existir\n" "$A" "$Z" "§3.1"
+    local fora=""
+    while read -r c; do
+      [ -z "$c" ] && continue
+      case "$c" in
+        v1/*|health) ;;
+        *) fora="$fora $c" ;;
+      esac
+    done <<< "$controllers"
+    if [ -n "$fora" ]; then
+      falha "§2.2" "controller fora de /v1 (e nao e a sonda health):$fora" "backend/src"
+    else
+      ok "§2.2" "todo controller do contrato vive sob /v1 (health fora, por ser sonda)"
+    fi
   fi
+
+  # §2.1 — o recurso esta no path e a acao no metodo. Verbo no caminho e o
+  # sintoma de RPC sobre HTTP: se a acao esta na URL, o metodo deixa de
+  # significar algo e cache, retry e idempotencia viram convencao local.
+  #
+  # A allowlist e a excecao declarada no §2.1: auth/login, register e refresh
+  # sao acoes porque a sessao nao existe como recurso (ADR 0003 §2.1). Rota de
+  # acao *nova* continua falhando aqui.
+  rotas="$(grep -rhoE "@(Get|Post|Patch|Put|Delete)\('[^']*'\)" "$RAIZ/backend/src" --include='*.ts' \
+    | sed -E "s/@[A-Za-z]+\('([^']*)'\)/\1/" | sort -u)"
+  local verbos=""
+  while read -r r; do
+    [ -z "$r" ] && continue
+    case "$r" in
+      login|register|refresh) continue ;;
+    esac
+    if printf '%s' "$r" | grep -qiE '(criar|listar|buscar|atualizar|deletar|remover|salvar|^get[A-Z]?|^create|^update|^delete|^list|^fetch|^add|^set)'; then
+      verbos="$verbos $r"
+    fi
+  done <<< "$rotas"
+  if [ -n "$verbos" ]; then
+    falha "§2.1" "verbo no path (RPC sobre HTTP):$verbos" "backend/src"
+  else
+    ok "§2.1" "nenhum verbo no path fora da allowlist de auth"
+  fi
+
+  # §2.3 — o resultado vai no status. Envelope de sucesso que carrega falha
+  # desliga retry por classe, alerta por taxa de 5xx e cache negativo.
+  proibe "§2.3" backend/src '(success *: *(true|false)|"success" *:)' \
+    "nenhuma resposta decide sucesso por campo do corpo"
+
+  # §2.4 — o envelope de erro e unico porque um filtro global normaliza tudo,
+  # inclusive a saida do ValidationPipe.
+  exige "§2.4" backend/src/main.ts 'useGlobalFilters\(new HttpExceptionFilter' \
+    "filtro de excecao global registrado (sem ele o ValidationPipe fura o contrato)"
+  exige "§2.4" backend/src/common/filters/http-exception.filter.ts 'error: \{' \
+    "o filtro devolve o envelope { error: { code, message } }"
+  exige "§2.4" backend/src/common/filters/http-exception.filter.ts 'VALIDACAO_FALHOU' \
+    "erro de validacao entra no mesmo envelope, com details"
+
+  # §2.4 — `code` e identificador estavel consumido pelo app; `message` e texto
+  # de tela. Codigo em minuscula ou com espaco quebra essa separacao.
+  local codigos ruins=""
+  codigos="$(grep -rhoE "code: '[^']*'" "$RAIZ/backend/src" --include='*.ts' \
+    | sed -E "s/code: '([^']*)'/\1/" | sort -u)"
+  while read -r c; do
+    [ -z "$c" ] && continue
+    printf '%s' "$c" | grep -qE '^[A-Z][A-Z0-9_]*$' || ruins="$ruins $c"
+  done <<< "$codigos"
+  if [ -n "$ruins" ]; then
+    falha "§2.4" "code de erro fora de SCREAMING_SNAKE_CASE:$ruins" "backend/src"
+  else
+    ok "§2.4" "todo code de erro e identificador estavel ($(printf '%s' "$codigos" | grep -c .) codigos)"
+  fi
+
+  # §2.5 — POST nao e idempotente por definicao do metodo; o header e a
+  # compensacao, e quem gera e o cliente.
+  exige "§2.5" app_achou/lib/features/checkout/checkout_page.dart 'idempotencyKey' \
+    "o cliente gera a chave de idempotencia da escrita cobravel"
+
+  # §2.6 — a separacao de audiencia esta no prefixo, que e o vocabulario do
+  # gateway e da CDN; nao em campo do corpo.
+  exige "§2.6" backend/src/seller/seller-products.controller.ts "@Controller\('v1/seller'\)" \
+    "o painel do lojista vive sob o prefixo /v1/seller"
+  exige "§2.6" backend/src/seller/seller-products.controller.ts '@Roles\(Role.LOJISTA\)' \
+    "o prefixo privado carrega a exigencia de papel"
+  proibe "§2.6" backend/src/products/products.controller.ts '@UseGuards' \
+    "a vitrine publica nao exige credencial (e o que a torna cacheavel na borda)"
+
+  # A decisao de estilo nao pode ser revertida por dependencia nova sem um ADR
+  # que substitua este.
+  proibe "§3" backend/package.json '(@nestjs/graphql|apollo-server|type-graphql|@grpc/|nice-grpc)' \
+    "nenhuma dependencia de GraphQL ou gRPC entrou sem ADR que substitua este"
 }
 
 # ======================================================= ADR 0002 — carrinho
@@ -484,16 +528,11 @@ relatorio_pendencias() {
   titulo "Pendencias declaradas nos ADRs (relatorio, nao derruba o build)"
 
   printf "\n  %sADR 0001%s\n" "$C" "$Z"
-  pendencia "0001 §9"   diferida   "POST /v1/orders nao implementado — escopo diferido, contrato em test/adr-0001-*" \
-    "[ -d '$RAIZ/backend/src/orders' ]"
-  pendencia "0001 §7"   diferida   "app ainda usa MockCheckoutRepository no lugar de HttpCheckoutRepository" \
-    "grep -rq 'class HttpCheckoutRepository' '$RAIZ/app_achou/lib'"
-  pendencia "0001 §6.2" aberta     "orders nao tem endereco de entrega (colunas em orders ou tabela addresses?)" \
-    "grep -qiE 'shippingAddress|deliveryAddress|model +Address' '$SCHEMA'"
-  pendencia "0001 §6.3" aberta     "TTL de cancelamento automatico nao implementado (24h e palpite sem medicao)" \
-    "grep -rqE 'PEDIDO_TTL|cancelarExpirados|TTL_PEDIDO' '$RAIZ/backend/src'"
-  pendencia "0001 §5"   divida     "transicao manual sem trilha de auditoria (quem confirmou, quando)" \
-    "grep -qiE 'confirmedBy|confirmadoPor|paidBy' '$SCHEMA'"
+  pendencia "0001 §4"   divida     "nenhuma rota emite ETag ou Cache-Control: o cache HTTP do estilo nao foi usado" \
+    "grep -rqE 'ETag|Cache-Control' '$RAIZ/backend/src'"
+  pendencia "0001 §5.1" aberta     "paginacao por limit/offset; cursor nao foi decidido explicitamente" false
+  pendencia "0001 §5.2" aberta     "recurso agregado para a home, se as N requisicoes virarem problema medido" false
+  pendencia "0001 §5.3" aberta     "PUT nao e usado em lugar nenhum — regra ou caso a caso?" false
 
   printf "\n  %sADR 0002%s\n" "$C" "$Z"
   pendencia "0002 §7"   diferida   "/v1/cart nao implementado — escopo diferido, contrato em test/adr-0002-*" \
